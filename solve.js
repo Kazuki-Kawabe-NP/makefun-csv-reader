@@ -212,3 +212,89 @@ export function runRawJSON(input,data){
   }
   return [Buffer.from('{"columns":'+JSON.stringify(columns)+',"rows":[','latin1'),out.subarray(0,k),Buffer.from('],"errors":'+JSON.stringify(errors)+'}','latin1')].filter(b=>b.length);
 }
+function consumeCSV(data,i,arena){
+  data=new Uint8Array(data.buffer,data.byteOffset,data.byteLength);
+  if(data[i]===239&&data[i+1]===187&&data[i+2]===191)i+=3;
+  const n=data.length, E=RAW_E;
+  let width=-1,rows=0,line=1,k=arena.k,begin=k,first=k;
+  const max=64*1024*1024;
+  let out=arena.buf, dst=new Uint8Array(out.buffer,out.byteOffset,out.byteLength); const errors=[];
+  function reserve(need){
+    if(k+need>max)return false;
+    if(k+need>out.length){const b=Buffer.alloc(Math.min(max,Math.max(2*out.length,k+need)));out.copy(b,0,0,k);out=arena.buf=b;dst=new Uint8Array(out.buffer,out.byteOffset,out.byteLength);}
+    return true;
+  }
+  function error(code,start,more){errors.push({code,line:start,row:rows,...more});}
+  while(i<n && data[i]!==34){
+    const at=i,start=line,rowOffset=k;
+    if(data[i]===92&&data[i+1]===110){i+=2;line++;continue;}
+    if(data[i]===92&&data[i+1]===114&&data[i+2]===92&&data[i+3]===110){i+=4;line++;continue;}
+    let fields=0,extra;
+    if(rows)dst[k++]=44;dst[k++]=91;
+    for(;;){
+      const fieldOffset=k,keep=width<0||fields<width;
+      if(fields&&keep)dst[k++]=44;
+      const startValue=k;dst[k++]=34;
+      const fieldStart=i,startLine=line;
+      let closed=false,c;
+      if(data[i]===92&&data[i+1]===34){
+        i+=2;
+        while(true){
+          c=data[i];
+          {const d=k-i; while(c>=32&&c!==34&&c!==92){dst[i+d]=c;c=data[++i];}k=i+d;if(c!==92){if(c===34)break;return null;}}
+          c=E[data[i+1]];if(!c)return null;i+=2;
+          if(c===34){
+            if(data[i]!==92||data[i+1]!==34){closed=true;break;}
+            i+=2;
+          }else if(c===13){if(data[i]===92&&data[i+1]===110)i+=2;c=10;line++;}
+          else if(c===10)line++;
+          if(c>=32 && c!==34 && c!==92){dst[k++]=c;continue;}
+          dst[k++]=92;
+          if(c===34||c===92)dst[k++]=c;
+          else{const e=RAW_SHORT[c];if(e)dst[k++]=e;
+            else{dst[k++]=117;dst[k++]=48;dst[k++]=48;dst[k++]=RAWHEX.charCodeAt(c>>>4);dst[k++]=RAWHEX.charCodeAt(c&15);}}
+        }
+        if(!closed){k=startValue+1;i=fieldStart;line=startLine;error('unterminated_quote',start);}
+      }
+      const kb=k;
+      while(true){
+        c=data[i];
+        {const d=k-i; while(c>=32&&c!==34&&c!==44&&c!==92){dst[i+d]=c;c=data[++i];}k=i+d;if(c!==92){if(c===34||c===44)break;return null;}}
+        c=E[data[i+1]];if(!c)return null;
+        if(c===10||c===13&&data[i+2]===92&&data[i+3]===110)break;
+        i+=2;
+        if(c===13){error('stray_cr',start);continue;}
+        if(c>=32&&c!==34&&c!==92){dst[k++]=c;continue;}
+        dst[k++]=92;
+        if(c===34||c===92)dst[k++]=c;
+        else{const e=RAW_SHORT[c];if(e)dst[k++]=e;
+          else{dst[k++]=117;dst[k++]=48;dst[k++]=48;dst[k++]=RAWHEX.charCodeAt(c>>>4);dst[k++]=RAWHEX.charCodeAt(c&15);}}
+      }
+      if(closed&&k!==kb)error('quote_junk',start);
+      dst[k++]=34;
+      if(!keep){
+        const val=JSON.parse(out.toString('latin1',startValue,k));
+        (extra??=[]).push(val);k=fieldOffset;
+      }
+      fields++;
+      if(data[i]===44){i++;continue;}
+      break;
+    }
+    if(fields>1||k-rowOffset>3+!!rows||data[at]===92&&data[at+1]===34){
+      if(width<0)width=fields;
+      {
+        if(fields<width){
+          error('short_row',start,{fields});
+          if(!reserve(1+(width-fields)*3+3*(n-i)+64))return null;
+          while(fields++<width){dst[k++]=44;dst[k++]=34;dst[k++]=34;}
+        }else if(fields>width)error('long_row',start,{extra});
+        dst[k++]=93;if(!rows)first=k;rows++;
+      }
+    }else k=rowOffset;
+    if(i<n&&data[i]!==34){i+=data[i+1]===114?4:2;line++;}
+  }
+  if(data[i]!==34||k>out.length)return null; arena.k=k;
+  return { out, begin, first, end:k, errors, next:i+1 };
+}
+
+export { RAW_E, consumeCSV };
