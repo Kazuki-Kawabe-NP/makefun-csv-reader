@@ -121,3 +121,94 @@ function parse(input,chunkSize,enc) {
   }
   return finish();
 }
+
+const RAW_E=new Uint8Array(256);
+RAW_E[34]=34;RAW_E[92]=92;RAW_E[47]=47;RAW_E[98]=8;RAW_E[102]=12;RAW_E[110]=10;RAW_E[114]=13;RAW_E[116]=9;
+
+
+const RAWHEX="0123456789abcdef";
+const RAW_SHORT=new Uint8Array(32);RAW_SHORT[8]=98;RAW_SHORT[9]=116;RAW_SHORT[10]=110;RAW_SHORT[12]=102;RAW_SHORT[13]=114;
+export function runRawJSON(input,data){
+  if(data[0]===239&&data[1]===187&&data[2]===191)data=data.subarray(3);
+  const n=data.length, E=RAW_E, header=input.header===true;
+  let columns=header?[]:null,width=-1,rows=0,line=1,i=0,k=0;
+  const max=64*1024*1024;
+  if(n*6+128>max)return null;
+  let out=Buffer.alloc(n*6+128);const errors=[];
+  function reserve(need){
+    if(k+need>max)return false;
+    if(k+need>out.length){const b=Buffer.alloc(Math.min(max,Math.max(2*out.length,k+need)));out.copy(b,0,0,k);out=b;}
+    return true;
+  }
+  function error(code,start,more){errors.push({code,line:start,row:header&&width<0?null:rows,...more});}
+  while(i<n){
+    const at=i,start=line,rowOffset=k,head=header&&width<0;
+    if(data[i]===92&&data[i+1]===110){i+=2;line++;continue;}
+    if(data[i]===92&&data[i+1]===114&&data[i+2]===92&&data[i+3]===110){i+=4;line++;continue;}
+    let fields=0,extra,headFields=head?[]:null;
+    if(rows)out[k++]=44;out[k++]=91;
+    for(;;){
+      const fieldOffset=k,keep=width<0||fields<width;
+      if(fields&&keep)out[k++]=44;
+      const startValue=k;out[k++]=34;
+      const fieldStart=i,startLine=line;
+      let closed=false,c;
+      if(data[i]===92&&data[i+1]===34){
+        i+=2;
+        while(i<n){
+          c=data[i];
+          if(c!==92){out[k++]=c;i++;continue;}
+          c=E[data[i+1]];i+=2;
+          if(c===34){
+            if(data[i]!==92||data[i+1]!==34){closed=true;break;}
+            i+=2;
+          }else if(c===13){if(data[i]===92&&data[i+1]===110)i+=2;c=10;line++;}
+          else if(c===10)line++;
+          if(c>=32 && c!==34 && c!==92){out[k++]=c;continue;}
+          out[k++]=92;
+          if(c===34||c===92)out[k++]=c;
+          else{const e=RAW_SHORT[c];if(e)out[k++]=e;
+            else{out[k++]=117;out[k++]=48;out[k++]=48;out[k++]=RAWHEX.charCodeAt(c>>>4);out[k++]=RAWHEX.charCodeAt(c&15);}}
+        }
+        if(!closed){k=startValue+1;i=fieldStart;line=startLine;error('unterminated_quote',start);}
+      }
+      const kb=k;
+      while(i<n){
+        c=data[i];
+        if(c!==92){if(c===44)break;out[k++]=c;i++;continue;}
+        c=E[data[i+1]];
+        if(c===10||c===13&&data[i+2]===92&&data[i+3]===110)break;
+        i+=2;
+        if(c===13){error('stray_cr',start);continue;}
+        if(c>=32&&c!==34&&c!==92){out[k++]=c;continue;}
+        out[k++]=92;
+        if(c===34||c===92)out[k++]=c;
+        else{const e=RAW_SHORT[c];if(e)out[k++]=e;
+          else{out[k++]=117;out[k++]=48;out[k++]=48;out[k++]=RAWHEX.charCodeAt(c>>>4);out[k++]=RAWHEX.charCodeAt(c&15);}}
+      }
+      if(closed&&k!==kb)error('quote_junk',start);
+      out[k++]=34;
+      if(head||!keep){
+        const val=JSON.parse(out.toString('latin1',startValue,k));
+        if(head)headFields.push(val);else{(extra??=[]).push(val);k=fieldOffset;}
+      }
+      fields++;
+      if(data[i]===44){i++;continue;}
+      break;
+    }
+    if(fields>1||k-rowOffset>3+!!rows||data[at]===92&&data[at+1]===34){
+      if(width<0){width=fields;if(head)columns=headFields;}
+      if(head)k=rowOffset;
+      else{
+        if(fields<width){
+          error('short_row',start,{fields});
+          if(!reserve(1+(width-fields)*3+6*(n-i)+64))return null;
+          while(fields++<width){out[k++]=44;out[k++]=34;out[k++]=34;}
+        }else if(fields>width)error('long_row',start,{extra});
+        out[k++]=93;rows++;
+      }
+    }else k=rowOffset;
+    if(i<n){i+=data[i+1]===114?4:2;line++;}
+  }
+  return [Buffer.from('{"columns":'+JSON.stringify(columns)+',"rows":[','latin1'),out.subarray(0,k),Buffer.from('],"errors":'+JSON.stringify(errors)+'}','latin1')].filter(b=>b.length);
+}
