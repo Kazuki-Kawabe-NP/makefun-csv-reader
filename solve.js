@@ -9,8 +9,15 @@ function parse(input,chunkSize,enc) {
   const encoded=[];
   function flush(){
     if(rows.length){
-      const body=JSON.stringify(rows).slice(1,-1);
-      encoded.push(enc?Buffer.from((encoded.length?',':'')+body,enc):body);
+      const body=JSON.stringify(rows);
+      if(enc==='utf8'||enc==='latin1'){
+        const b=Buffer.from(body,enc);
+        if(encoded.length){b[0]=44;encoded.push(b.subarray(0,b.length-1));}
+        else encoded.push(b.subarray(1,b.length-1));
+      }else{
+        const inner=body.slice(1,-1);
+        encoded.push(enc?Buffer.from((encoded.length?',':'')+inner,enc):inner);
+      }
       rows=[];
     }
   }
