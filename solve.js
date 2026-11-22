@@ -1,6 +1,6 @@
 export function run(input) { return parse(input,0); }
-export function runJSON(input,chunkSize) { return parse(input,chunkSize); }
-function parse(input,chunkSize) {
+export function runJSON(input,chunkSize,enc) { return parse(input,chunkSize,enc); }
+function parse(input,chunkSize,enc) {
   let s=String(input.text);
   const header=input.header===true;
   if(s.charCodeAt(0)===65279) s=s.slice(1);
@@ -8,18 +8,28 @@ function parse(input,chunkSize) {
   let rowCount=0;
   const encoded=[];
   function flush(){
-    if(rows.length){encoded.push(JSON.stringify(rows).slice(1,-1));rows=[];}
+    if(rows.length){
+      const body=JSON.stringify(rows).slice(1,-1);
+      encoded.push(enc?Buffer.from((encoded.length?',':'')+body,enc):body);
+      rows=[];
+    }
   }
   function finish(){
     if(!chunkSize)return {columns,rows,errors};
     flush();
+    if(enc){
+      const parts=[Buffer.from('{"columns":'+JSON.stringify(columns)+',"rows":[',enc),...encoded,Buffer.from('],"errors":'+JSON.stringify(errors)+'}',enc)];
+      return parts;
+    }
     return '{"columns":'+JSON.stringify(columns)+',"rows":['+encoded.join(',')+'],"errors":'+JSON.stringify(errors)+'}';
   }
   const error=(code,start,more)=>errors.push({code,line:start,row:header&&width<0?null:rowCount,...more});
   function emit(a,start) {
-    if(width<0) {width=a.length;if(header){columns=a;return;}}
-    if(a.length<width){error('short_row',start,{fields:a.length});while(a.length<width)a.push('');}
-    if(a.length>width){error('long_row',start,{extra:a.slice(width)});a.length=width;}
+    const n=a.length;
+    if(width<0){width=n;if(header){columns=a;return;}}
+    const delta=n-width;
+    if(delta<0){error('short_row',start,{fields:n});for(let j=n;j<width;j++)a[j]='';}
+    else if(delta>0){error('long_row',start,{extra:a.slice(width)});a.length=width;}
     rows.push(a);rowCount++;
     if(chunkSize&&rows.length>=chunkSize)flush();
   }
@@ -68,7 +78,9 @@ function parse(input,chunkSize) {
         while((p=s.indexOf('"',p))>=0){if(s[p+1]==='"'){doubled=true;p+=2;continue;}closed=true;break;}
         if(closed){
           v=s.slice(i+1,p);
-          if(doubled||/[\r\n]/.test(v))v=v.replace(/""|\r\n|[\r\n]/g,m=>{if(m==='""')return '"';line++;return '\n';});
+          const breaks=v.match(/\r\n|[\r\n]/g);
+          if(breaks){line+=breaks.length;v=v.replace(/\r\n|\r/g,'\n');}
+          if(doubled)v=v.replace(/""/g,'"');
           j=i=p+1;
           const c=s.charCodeAt(i);
           if(c===44){a.push(v);i++;continue;}
