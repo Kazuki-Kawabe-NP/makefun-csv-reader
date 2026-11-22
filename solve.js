@@ -34,12 +34,36 @@ function parse(input,chunkSize) {
     }
     return finish();
   }
-  const delimiter=/[,\r\n]/g;
-  while(i<s.length){
+  const group2=/((?:[^",\r\n][^,\r\n]*)?)(?:,((?:[^",\r\n][^,\r\n]*)?)(?:,((?:[^",\r\n][^,\r\n]*)?)(?:,((?:[^",\r\n][^,\r\n]*)?))?)?)?(,|\r\n|\n|$)/y;
+  const quoteToken=/"([^"\r\n]*)((?:""[^"\r\n]*)*)"(,|\r\n|\n|$)/y;
+  const delimiter=/[^,\r\n]*/y;
+  track: while(i<s.length){
     const start=line,at=i,a=[];
     while(true){
+      group2.lastIndex=i;
+      const m=group2.exec(s);
+      if(m!==null){
+        if(m[2]===undefined)a.push(m[1]);else if(m[3]===undefined)a.push(m[1],m[2]);else if(m[4]===undefined)a.push(m[1],m[2],m[3]);else a.push(m[1],m[2],m[3],m[4]);
+        i=group2.lastIndex;
+        const sep=m[5];
+        if(sep===',')continue;
+        if(i-at>sep.length)emit(a,start);
+        if(sep.length)line++;
+        continue track;
+      }
       let v='',j=i, closed=false, junk=false;
       if(s[i]==='"'){
+        quoteToken.lastIndex=i;
+        const q=quoteToken.exec(s);
+        if(q!==null){
+          const sep=q[3];
+          a.push(q[2].length?q[1]+q[2].replace(/""/g,'"'):q[1]);
+          i=quoteToken.lastIndex;
+          if(sep===',')continue;
+          emit(a,start);
+          if(sep.length)line++;
+          continue track;
+        }
         let p=i+1,doubled=false;
         while((p=s.indexOf('"',p))>=0){if(s[p+1]==='"'){doubled=true;p+=2;continue;}closed=true;break;}
         if(closed){
@@ -52,7 +76,8 @@ function parse(input,chunkSize) {
         }else error('unterminated_quote',start);
       }
       delimiter.lastIndex=i;
-      const p=delimiter.test(s)?delimiter.lastIndex-1:s.length;
+      delimiter.test(s);
+      const p=delimiter.lastIndex;
       if(s.charCodeAt(p)!==13||s.charCodeAt(p+1)===10){
         if(closed&&p!==i) error('quote_junk',start);
         if(p!==i) v+=s.slice(i,p);
