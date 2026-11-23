@@ -2,7 +2,7 @@ import {setFlagsFromString} from 'node:v8';
 import {openSync,closeSync,readFileSync,writeFileSync,writevSync} from 'node:fs';
 import {isUtf8} from 'node:buffer';
 import {runJSON,runRawJSON,RAW_E,consumeCSV} from './solve.js';
-setFlagsFromString('--no-turbofan --no-incremental-marking --no-parallel-scavenge --optimize-for-size --regexp-tier-up-ticks=8');
+setFlagsFromString('--no-incremental-marking --no-parallel-scavenge --optimize-for-size --regexp-tier-up-ticks=8');
 const [source='/input/cases.json',destination='/output/answers.json'] = process.argv.slice(2);
 const bytes=readFileSync(source);
 // ASCII structural characters are invariant under the byte-preserving view.

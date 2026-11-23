@@ -215,20 +215,27 @@ export function runRawJSON(input,data){
 function consumeCSV(data,i,arena){
   data=new Uint8Array(data.buffer,data.byteOffset,data.byteLength);
   if(data[i]===239&&data[i+1]===187&&data[i+2]===191)i+=3;
-  const n=data.length, E=RAW_E;
-  let width=-1,rows=0,line=1,k=arena.k,begin=k,first=k;
-  const max=64*1024*1024;
-  let out=arena.buf, dst=new Uint8Array(out.buffer,out.byteOffset,out.byteLength); const errors=[];
-  function reserve(need){
-    if(k+need>max)return false;
-    if(k+need>out.length){const b=Buffer.alloc(Math.min(max,Math.max(2*out.length,k+need)));out.copy(b,0,0,k);out=arena.buf=b;dst=new Uint8Array(out.buffer,out.byteOffset,out.byteLength);}
-    return true;
+  const n=data.length,begin=arena.k;
+  const st={i,k:begin,width:-1,line:1,rows:0,first:begin,out:arena.buf,dst:new Uint8Array(arena.buf.buffer,arena.buf.byteOffset,arena.buf.byteLength),errors:[],status:0,partialEnd:0,finishAt:0,finishLine:0,fields:0,cut:0};
+  while(st.i<n&&data[st.i]!==34){
+    if(st.width>=2){
+      scanRegularRows(data,st.dst,st.width,st);
+      if(st.status){if(!resolveWidth(data,st))return null;continue;}
+      if(st.i>=n||data[st.i]===34)break;
+    }
+    if(!repairOne(data,st))return null;
   }
-  function error(code,start,more){errors.push({code,line:start,row:rows,...more});}
-  while(i<n && data[i]!==34){
+  if(data[st.i]!==34||st.k>st.out.length)return null;
+  arena.buf=st.out;arena.k=st.k;
+  return {out:st.out,begin,first:st.first,end:st.k,errors:st.errors,next:st.i+1};
+}
+
+function repairOne(data,st) {
+ const n=data.length,E=RAW_E,max=64*1024*1024,errors=st.errors;
+ let {i,k,rows,width,line,first,out,dst}=st;
     const at=i,start=line,rowOffset=k;
-    if(data[i]===92&&data[i+1]===110){i+=2;line++;continue;}
-    if(data[i]===92&&data[i+1]===114&&data[i+2]===92&&data[i+3]===110){i+=4;line++;continue;}
+    if(data[i]===92&&data[i+1]===110){st.i=i+2;st.line=line+1;return true;}
+    if(data[i]===92&&data[i+1]===114&&data[i+2]===92&&data[i+3]===110){st.i=i+4;st.line=line+1;return true;}
     let fields=0,extra;
     if(rows)dst[k++]=44;dst[k++]=91;
     for(;;){
@@ -254,7 +261,7 @@ function consumeCSV(data,i,arena){
           else{const e=RAW_SHORT[c];if(e)dst[k++]=e;
             else{dst[k++]=117;dst[k++]=48;dst[k++]=48;dst[k++]=RAWHEX.charCodeAt(c>>>4);dst[k++]=RAWHEX.charCodeAt(c&15);}}
         }
-        if(!closed){k=startValue+1;i=fieldStart;line=startLine;error('unterminated_quote',start);}
+        if(!closed){k=startValue+1;i=fieldStart;line=startLine;appendCSVError(errors,'unterminated_quote',start,rows);}
       }
       const kb=k;
       while(true){
@@ -263,14 +270,14 @@ function consumeCSV(data,i,arena){
         c=E[data[i+1]];if(!c)return null;
         if(c===10||c===13&&data[i+2]===92&&data[i+3]===110)break;
         i+=2;
-        if(c===13){error('stray_cr',start);continue;}
+        if(c===13){appendCSVError(errors,'stray_cr',start,rows);continue;}
         if(c>=32&&c!==34&&c!==92){dst[k++]=c;continue;}
         dst[k++]=92;
         if(c===34||c===92)dst[k++]=c;
         else{const e=RAW_SHORT[c];if(e)dst[k++]=e;
           else{dst[k++]=117;dst[k++]=48;dst[k++]=48;dst[k++]=RAWHEX.charCodeAt(c>>>4);dst[k++]=RAWHEX.charCodeAt(c&15);}}
       }
-      if(closed&&k!==kb)error('quote_junk',start);
+      if(closed&&k!==kb)appendCSVError(errors,'quote_junk',start,rows);
       dst[k++]=34;
       if(!keep){
         const val=JSON.parse(out.toString('latin1',startValue,k));
@@ -284,17 +291,118 @@ function consumeCSV(data,i,arena){
       if(width<0)width=fields;
       {
         if(fields<width){
-          error('short_row',start,{fields});
-          if(!reserve(1+(width-fields)*3+3*(n-i)+64))return null;
+          appendCSVError(errors,'short_row',start,rows,{fields});
+          const bigger=growCSV(out,k,1+(width-fields)*3+3*(n-i)+64,max);
+          if(bigger===null)return null;
+          if(bigger!==out){out=bigger;dst=new Uint8Array(out.buffer,out.byteOffset,out.byteLength);}
           while(fields++<width){dst[k++]=44;dst[k++]=34;dst[k++]=34;}
-        }else if(fields>width)error('long_row',start,{extra});
+        }else if(fields>width)appendCSVError(errors,'long_row',start,rows,{extra});
         dst[k++]=93;if(!rows)first=k;rows++;
       }
     }else k=rowOffset;
     if(i<n&&data[i]!==34){i+=data[i+1]===114?4:2;line++;}
+ st.i=i;st.k=k;st.width=width;st.rows=rows;st.line=line;st.first=first;st.out=out;st.dst=dst;
+ return true;
+}
+export { RAW_E, consumeCSV };
+function scanRegularRows(data,dst,width,of) {
+  const n=data.length;
+  let i=of.i,k=of.k,line=of.line,r=of.rows,pi=i,pk=k,pl=line;
+  let status=0,count=0,cut=0;
+  rowLoop:while(i<n&&data[i]!==34){
+    pi=i;pk=k;pl=line;
+    if(data[i]===92){
+      if(data[i+1]===110){i+=2;line++;pi=i;pl=line;continue;}
+      if(data[i+1]===114&&data[i+2]===92&&data[i+3]===110){i+=4;line++;pi=i;pl=line;continue;}
+    }
+    dst[k++]=44;dst[k++]=91;
+    count=0;cut=0;
+    for(;;){
+      dst[k++]=34;
+      let c;
+      if(data[i]===92&&data[i+1]===34){
+        i+=2;
+        for(;;){
+          c=data[i];
+          const d=k-i;
+          while(c>=32&&c!==34&&c!==92){dst[i+d]=c;c=data[++i];}
+          k=i+d;
+          if(c!==92)break rowLoop;
+          const e=data[i+1];
+          i+=2;
+          if(e===34){
+            if(data[i]!==92||data[i+1]!==34)break;
+            i+=2;
+          }else if(e===114){
+            if(data[i]===92&&data[i+1]===110)i+=2;
+            dst[k++]=92;dst[k++]=110;line++;continue;
+          }else if(e===110)line++;
+          else if(e===47){dst[k++]=47;continue;}
+          else if(e!==92&&e!==98&&e!==102&&e!==116)break rowLoop;
+          dst[k++]=92;dst[k++]=e;
+        }
+        c=data[i];
+      }else{
+        for(;;){
+          c=data[i];
+          const d=k-i;
+          while(c>=32&&c!==34&&c!==44&&c!==92){dst[i+d]=c;c=data[++i];}
+          k=i+d;
+          if(c!==92)break;
+          const e=data[i+1];
+          if(e===110||e===114)break;
+          i+=2;
+          if(e===47){dst[k++]=47;continue;}
+          if(e!==34&&e!==92&&e!==98&&e!==102&&e!==116)break rowLoop;
+          dst[k++]=92;dst[k++]=e;
+        }
+      }
+      dst[k++]=34;
+      ++count;
+      if(count===width)cut=k;
+      if(c===44){dst[k++]=44;i++;continue;}
+      if(c===92){
+        if(data[i+1]===110)i+=2;
+        else if(data[i+1]===114&&data[i+2]===92&&data[i+3]===110)i+=4;
+        else break rowLoop;
+        line++;
+      }else if(c!==34)break rowLoop;
+      break;
+    }
+    if(k>=dst.length)break;
+    if(count!==width){status=count>width?2:1;break;}
+    dst[k++]=93;r++;
+    pi=i;pk=k;pl=line;
   }
-  if(data[i]!==34||k>out.length)return null; arena.k=k;
-  return { out, begin, first, end:k, errors, next:i+1 };
+  of.i=pi;of.k=pk;of.line=pl;of.rows=r;
+  of.status=status;
+  if(status){of.partialEnd=k;of.finishAt=i;of.finishLine=line;of.fields=count;of.cut=cut;}
 }
 
-export { RAW_E, consumeCSV };
+function resolveWidth(data,st) {
+  let {out,dst,width,fields,partialEnd:k,finishAt,finishLine,cut,rows,line,errors,status}=st;
+  if(status===1){
+    errors.push({code:'short_row',line,row:rows,fields});
+    const need=1+(width-fields)*3+3*(data.length-finishAt)+64,max=64*1024*1024;
+    if(k+need>max)return false;
+    if(k+need>out.length){
+      const b=Buffer.alloc(Math.min(max,Math.max(2*out.length,k+need)));
+      out.copy(b,0,0,k);out=b;dst=new Uint8Array(out.buffer,out.byteOffset,out.byteLength);
+    }
+    for(let p=fields;p<width;p++){dst[k++]=44;dst[k++]=34;dst[k++]=34;}
+  }else{
+    const extra=JSON.parse('['+out.toString('latin1',cut+1,k)+']');
+    errors.push({code:'long_row',line,row:rows,extra});
+    k=cut;
+  }
+  dst[k++]=93;
+  st.i=finishAt;st.line=finishLine;st.k=k;st.rows=rows+1;st.out=out;st.dst=dst;
+  return true;
+}
+
+function growCSV(out,k,need,max) {
+  if(k+need>max)return null;
+  if(k+need<=out.length)return out;
+  const b=Buffer.alloc(Math.min(max,Math.max(2*out.length,k+need)));out.copy(b,0,0,k);return b;
+}
+function appendCSVError(errors,code,line,row,more){errors.push({code,line,row,...more});}
