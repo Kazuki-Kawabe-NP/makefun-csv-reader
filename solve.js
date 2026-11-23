@@ -317,6 +317,10 @@ function repairField(data,dst,f,start,rows,errors){
 }
 const R_Q=new Uint8Array(256).fill(1,32),R_U=new Uint8Array(256).fill(1,32);
 R_Q[34]=0;R_Q[92]=0;R_U[34]=0;R_U[44]=0;R_U[92]=0;
+const RE_PAIRS=new Uint8Array(256), RE_SUFFIX=new Int32Array(256).fill(-1), RE_LINE=new Uint8Array(256), RE_OUT=new Uint8Array(256);
+ RE_PAIRS[34]=2;RE_PAIRS[47]=3;RE_SUFFIX[34]=23586;RE_SUFFIX[114]=23662;RE_LINE[110]=1;RE_LINE[114]=1;
+ for(const e of [34,92,98,102,110,116])RE_OUT[e]=e;
+ RE_OUT[114]=110;
 function scanRegularRows(data,dst,width,of) {
   const n=data.length,Q=R_Q,U=R_U;
   let i=of.i,k=of.k,line=of.line,r=of.rows,pi=i,pk=k,pl=line;
@@ -339,17 +343,15 @@ function scanRegularRows(data,dst,width,of) {
           while(Q[c]){dst[i+d]=c;c=data[++i];}
           k=i+d;
           if(c!==92)break rowLoop;
-          const e=data[i+1]|0, isCR=e===114;
-          i+=2;line+=+(e===110);
-          if(e===34){
-            if(data[i]!==92||data[i+1]!==34)break;
-            i+=2;
-          }else if(isCR){
-            i+=((data[i]===92)&(data[i+1]===110))<<1;
-            dst[k++]=92;dst[k++]=110;line++;continue;
-          }else if(e===47){dst[k++]=47;continue;}
-          else if(!QUOTED_PASSTHROUGH[e])break rowLoop;
-          dst[k++]=92;dst[k++]=e;
+          const e=data[i+1]|0, pair=((data[i+2]|0)<<8)|(data[i+3]|0);
+          const how=RE_PAIRS[e], matchingPair=+(pair===RE_SUFFIX[e]);
+          i+=2+(matchingPair<<1);
+          line+=RE_LINE[e];
+          if(how===2 && !matchingPair)break;
+          if(how===3){dst[k++]=47;continue;}
+          const code=RE_OUT[e];
+          if(!code)break rowLoop;
+          dst[k++]=92;dst[k++]=code;
         }
         c=data[i];
       }else{
