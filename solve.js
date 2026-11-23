@@ -236,48 +236,15 @@ function repairOne(data,st) {
     const at=i,start=line,rowOffset=k;
     if(data[i]===92&&data[i+1]===110){st.i=i+2;st.line=line+1;return true;}
     if(data[i]===92&&data[i+1]===114&&data[i+2]===92&&data[i+3]===110){st.i=i+4;st.line=line+1;return true;}
-    let fields=0,extra;
+    let fields=0,extra;const f={i:0,k:0,line:0};
     if(rows)dst[k++]=44;dst[k++]=91;
     for(;;){
       const fieldOffset=k,keep=width<0||fields<width;
       if(fields&&keep)dst[k++]=44;
       const startValue=k;dst[k++]=34;
-      const fieldStart=i,startLine=line;
-      let closed=false,c;
-      if(data[i]===92&&data[i+1]===34){
-        i+=2;
-        while(true){
-          c=data[i];
-          {const d=k-i; while(c>=32&&c!==34&&c!==92){dst[i+d]=c;c=data[++i];}k=i+d;if(c!==92){if(c===34)break;return null;}}
-          c=E[data[i+1]];if(!c)return null;i+=2;
-          if(c===34){
-            if(data[i]!==92||data[i+1]!==34){closed=true;break;}
-            i+=2;
-          }else if(c===13){if(data[i]===92&&data[i+1]===110)i+=2;c=10;line++;}
-          else if(c===10)line++;
-          if(c>=32 && c!==34 && c!==92){dst[k++]=c;continue;}
-          dst[k++]=92;
-          if(c===34||c===92)dst[k++]=c;
-          else{const e=RAW_SHORT[c];if(e)dst[k++]=e;
-            else{dst[k++]=117;dst[k++]=48;dst[k++]=48;dst[k++]=RAWHEX.charCodeAt(c>>>4);dst[k++]=RAWHEX.charCodeAt(c&15);}}
-        }
-        if(!closed){k=startValue+1;i=fieldStart;line=startLine;appendCSVError(errors,'unterminated_quote',start,rows);}
-      }
-      const kb=k;
-      while(true){
-        c=data[i];
-        {const d=k-i; while(c>=32&&c!==34&&c!==44&&c!==92){dst[i+d]=c;c=data[++i];}k=i+d;if(c!==92){if(c===34||c===44)break;return null;}}
-        c=E[data[i+1]];if(!c)return null;
-        if(c===10||c===13&&data[i+2]===92&&data[i+3]===110)break;
-        i+=2;
-        if(c===13){appendCSVError(errors,'stray_cr',start,rows);continue;}
-        if(c>=32&&c!==34&&c!==92){dst[k++]=c;continue;}
-        dst[k++]=92;
-        if(c===34||c===92)dst[k++]=c;
-        else{const e=RAW_SHORT[c];if(e)dst[k++]=e;
-          else{dst[k++]=117;dst[k++]=48;dst[k++]=48;dst[k++]=RAWHEX.charCodeAt(c>>>4);dst[k++]=RAWHEX.charCodeAt(c&15);}}
-      }
-      if(closed&&k!==kb)appendCSVError(errors,'quote_junk',start,rows);
+      f.i=i;f.k=k;f.line=line;
+      if(!repairField(data,dst,f,start,rows,errors))return null;
+      i=f.i;k=f.k;line=f.line;
       dst[k++]=34;
       if(!keep){
         const val=JSON.parse(out.toString('latin1',startValue,k));
@@ -305,16 +272,60 @@ function repairOne(data,st) {
  return true;
 }
 export { RAW_E, consumeCSV };
+function repairField(data,dst,f,start,rows,errors){
+ const E=RAW_E,startValue=f.k-1;
+ let i=f.i,k=f.k,line=f.line;
+      const fieldStart=i,startLine=line;
+      let closed=false,c;
+      if(data[i]===92&&data[i+1]===34){
+        i+=2;
+        while(true){
+          c=data[i];
+          {const d=k-i; while(c>=32&&c!==34&&c!==92){dst[i+d]=c;c=data[++i];}k=i+d;if(c!==92){if(c===34)break;return false;}}
+          c=E[data[i+1]];if(!c)return false;i+=2;
+          if(c===34){
+            if(data[i]!==92||data[i+1]!==34){closed=true;break;}
+            i+=2;
+          }else if(c===13){if(data[i]===92&&data[i+1]===110)i+=2;c=10;line++;}
+          else if(c===10)line++;
+          if(c>=32 && c!==34 && c!==92){dst[k++]=c;continue;}
+          dst[k++]=92;
+          if(c===34||c===92)dst[k++]=c;
+          else{const e=RAW_SHORT[c];if(e)dst[k++]=e;
+            else{dst[k++]=117;dst[k++]=48;dst[k++]=48;dst[k++]=RAWHEX.charCodeAt(c>>>4);dst[k++]=RAWHEX.charCodeAt(c&15);}}
+        }
+        if(!closed){k=startValue+1;i=fieldStart;line=startLine;appendCSVError(errors,'unterminated_quote',start,rows);}
+      }
+      const kb=k;
+      while(true){
+        c=data[i];
+        {const d=k-i; while(c>=32&&c!==34&&c!==44&&c!==92){dst[i+d]=c;c=data[++i];}k=i+d;if(c!==92){if(c===34||c===44)break;return false;}}
+        c=E[data[i+1]];if(!c)return false;
+        if(c===10||c===13&&data[i+2]===92&&data[i+3]===110)break;
+        i+=2;
+        if(c===13){appendCSVError(errors,'stray_cr',start,rows);continue;}
+        if(c>=32&&c!==34&&c!==92){dst[k++]=c;continue;}
+        dst[k++]=92;
+        if(c===34||c===92)dst[k++]=c;
+        else{const e=RAW_SHORT[c];if(e)dst[k++]=e;
+          else{dst[k++]=117;dst[k++]=48;dst[k++]=48;dst[k++]=RAWHEX.charCodeAt(c>>>4);dst[k++]=RAWHEX.charCodeAt(c&15);}}
+      }
+      if(closed&&k!==kb)appendCSVError(errors,'quote_junk',start,rows);
+
+ f.i=i;f.k=k;f.line=line;
+ return true;
+}
+const R_Q=new Uint8Array(256).fill(1,32),R_U=new Uint8Array(256).fill(1,32);
+R_Q[34]=0;R_Q[92]=0;R_U[34]=0;R_U[44]=0;R_U[92]=0;
 function scanRegularRows(data,dst,width,of) {
-  const n=data.length;
+  const n=data.length,Q=R_Q,U=R_U;
   let i=of.i,k=of.k,line=of.line,r=of.rows,pi=i,pk=k,pl=line;
   let status=0,count=0,cut=0;
   rowLoop:while(i<n&&data[i]!==34){
     pi=i;pk=k;pl=line;
-    if(data[i]===92){
-      if(data[i+1]===110){i+=2;line++;pi=i;pl=line;continue;}
-      if(data[i+1]===114&&data[i+2]===92&&data[i+3]===110){i+=4;line++;pi=i;pl=line;continue;}
-    }
+    const len0=data[i]===92?sepLength(data,i):0;
+    i+=len0;line+=+(len0>0);pi=i;pl=line;
+    if(len0)continue;
     dst[k++]=44;dst[k++]=91;
     count=0;cut=0;
     for(;;){
@@ -325,20 +336,19 @@ function scanRegularRows(data,dst,width,of) {
         for(;;){
           c=data[i];
           const d=k-i;
-          while(c>=32&&c!==34&&c!==92){dst[i+d]=c;c=data[++i];}
+          while(Q[c]){dst[i+d]=c;c=data[++i];}
           k=i+d;
           if(c!==92)break rowLoop;
-          const e=data[i+1];
-          i+=2;
+          const e=data[i+1]|0, isCR=e===114;
+          i+=2;line+=+(e===110);
           if(e===34){
             if(data[i]!==92||data[i+1]!==34)break;
             i+=2;
-          }else if(e===114){
-            if(data[i]===92&&data[i+1]===110)i+=2;
+          }else if(isCR){
+            i+=((data[i]===92)&(data[i+1]===110))<<1;
             dst[k++]=92;dst[k++]=110;line++;continue;
-          }else if(e===110)line++;
-          else if(e===47){dst[k++]=47;continue;}
-          else if(e!==92&&e!==98&&e!==102&&e!==116)break rowLoop;
+          }else if(e===47){dst[k++]=47;continue;}
+          else if(!QUOTED_PASSTHROUGH[e])break rowLoop;
           dst[k++]=92;dst[k++]=e;
         }
         c=data[i];
@@ -346,7 +356,7 @@ function scanRegularRows(data,dst,width,of) {
         for(;;){
           c=data[i];
           const d=k-i;
-          while(c>=32&&c!==34&&c!==44&&c!==92){dst[i+d]=c;c=data[++i];}
+          while(U[c]){dst[i+d]=c;c=data[++i];}
           k=i+d;
           if(c!==92)break;
           const e=data[i+1];
@@ -362,10 +372,8 @@ function scanRegularRows(data,dst,width,of) {
       if(count===width)cut=k;
       if(c===44){dst[k++]=44;i++;continue;}
       if(c===92){
-        if(data[i+1]===110)i+=2;
-        else if(data[i+1]===114&&data[i+2]===92&&data[i+3]===110)i+=4;
-        else break rowLoop;
-        line++;
+        const len=sepLength(data,i);if(!len)break rowLoop;
+        i+=len;line++;
       }else if(c!==34)break rowLoop;
       break;
     }
@@ -406,3 +414,11 @@ function growCSV(out,k,need,max) {
   const b=Buffer.alloc(Math.min(max,Math.max(2*out.length,k+need)));out.copy(b,0,0,k);return b;
 }
 function appendCSVError(errors,code,line,row,more){errors.push({code,line,row,...more});}
+
+
+function sepLength(data,i){
+ const e=data[i+1]|0,b=data[i+2]|0,c=data[i+3]|0;
+ return ((e===110)<<1)|(((e===114)&(b===92)&(c===110))<<2);
+}
+const QUOTED_PASSTHROUGH=new Uint8Array(256);
+QUOTED_PASSTHROUGH[92]=QUOTED_PASSTHROUGH[98]=QUOTED_PASSTHROUGH[102]=QUOTED_PASSTHROUGH[110]=QUOTED_PASSTHROUGH[116]=1;
